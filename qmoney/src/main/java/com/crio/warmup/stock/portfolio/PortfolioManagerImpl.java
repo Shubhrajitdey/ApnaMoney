@@ -19,6 +19,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,6 +55,7 @@ public class PortfolioManagerImpl implements PortfolioManager {
   public PortfolioManagerImpl(StockQuotesService stockQuotesService) {
     this.stockQuotesService = stockQuotesService;
   }
+  @Override
   public List<AnnualizedReturn> calculateAnnualizedReturn(List<PortfolioTrade> portfolioTrades,LocalDate endDate) throws StockQuoteServiceException{
       List<AnnualizedReturn> annualizedReturnsList = new ArrayList<>();
       for (PortfolioTrade pt : portfolioTrades) {
@@ -70,34 +72,47 @@ public class PortfolioManagerImpl implements PortfolioManager {
     return candles.get(0).getOpen();
   }
 
-
   public static Double getClosingPriceOnEndDate(List<Candle> candles) {
     return candles.get(candles.size() - 1).getClose();
   }
   
-  // public static String getToken() {
-  //   String TOKEN = "22e405823b96a0065f7e3ecb5b60a44ad046f434";
-  //   return TOKEN;
-  // }
   public static AnnualizedReturn calculateAnnualizedReturns(LocalDate endDate,
-    PortfolioTrade trade, Double buyPrice, Double sellPrice) {
+      PortfolioTrade trade, Double buyPrice, Double sellPrice) {
     Double totalReturn = (sellPrice - buyPrice) / buyPrice;
     Double noOfYears = ChronoUnit.DAYS.between(trade.getPurchaseDate(), endDate) / 365.24;
     Double annualizedReturns = Math.pow((1.0 + totalReturn), (1.0 / noOfYears)) - 1;
     return new AnnualizedReturn(trade.getSymbol(), annualizedReturns, totalReturn);
   }
+  
   private Comparator<AnnualizedReturn> getComparator() {
     return Comparator.comparing(AnnualizedReturn::getAnnualizedReturn).reversed();
   }
 
-  //CHECKSTYLE:OFF
-
-  // TODO: CRIO_TASK_MODULE_REFACTOR
-  //  Extract the logic to call Tiingo third-party APIs to a separate function.
-  //  Remember to fill out the buildUri function and use that.
-
-
-  public List<Candle> getStockQuote(String symbol, LocalDate from, LocalDate to) throws StockQuoteServiceException{
-      return stockQuotesService.getStockQuote(symbol, from, to);
+  public List<Candle> getStockQuote(String symbol, LocalDate from, LocalDate to)
+      throws StockQuoteServiceException {
+    return stockQuotesService.getStockQuote(symbol, from, to);
+  }
+  
+  @Override
+  public List<AnnualizedReturn> calculateAnnualizedReturnParallel(List<PortfolioTrade> portfolioTrades,
+      LocalDate endDate, int numThreads) throws InterruptedException, StockQuoteServiceException {
+    ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+    List<AnnualizedReturn> annualizedReturnsList = new ArrayList<>();
+    List<Future<AnnualizedReturn>> futureAnnualizedList = new ArrayList<Future<AnnualizedReturn>>();
+    List<AnnualizedReturnTask> annualizedReturnTasksList = new ArrayList<>();
+    for (PortfolioTrade pt : portfolioTrades) {
+      annualizedReturnTasksList.add(new AnnualizedReturnTask(pt, stockQuotesService, endDate));
+    }
+    futureAnnualizedList = executor.invokeAll(annualizedReturnTasksList);
+    try{
+      for(Future<AnnualizedReturn> futureAnnualized : futureAnnualizedList){
+        annualizedReturnsList.add(futureAnnualized.get());
+      }
+    }catch(InterruptedException|ExecutionException e){
+      throw new StockQuoteServiceException(e.getMessage());
+    }
+    executor.shutdown();  
+    annualizedReturnsList.sort(getComparator());
+    return annualizedReturnsList;
   }
 }
